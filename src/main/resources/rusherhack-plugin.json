@@ -1,0 +1,13 @@
+{
+  "Plugin-Class": "lol.tilley.media.PluginMain",
+  "Name": "${project.plugin_name}",
+  "Version": "${project.plugin_version}",
+  "Description": "plugin to use os apis to view and control music ",
+  "URL": "https://github.com/tillay-rh-plugins/rusherhack-media-controls",
+  "Authors": [
+    "tilley"
+  ],
+  "Minecraft-Versions": [
+    "${project.minecraft_version}"
+  ]
+}
