@@ -3,7 +3,6 @@ plugins {
 	id 'java'
 	id 'fabric-loom' version '1.9-SNAPSHOT'
 	id 'maven-publish'
-	id 'com.github.johnrengelman.shadow' version '8.1.1'
 }
 
 version = project.plugin_version
@@ -30,8 +29,8 @@ repositories {
 		name = "rusherhack"
 		//releases repository will have the latest api version for last stable rusherhack release
 		//snapshots will always be the latest api version
-		url = "https://maven.rusherhack.org/releases"
-		//url = "https://maven.rusherhack.org/snapshots"
+		//url = "https://maven.rusherhack.org/releases"
+		url = "https://maven.rusherhack.org/snapshots"
 	}
 
 	maven {
@@ -53,10 +52,6 @@ dependencies {
 
 	//rusherhack api
 	rusherhackApi "org.rusherhack:rusherhack-api:$minecraft_version-SNAPSHOT"
-
-	//dbus stuff
-	shadow 'com.github.hypfvieh:dbus-java-core:5.2.0'
-	shadow 'com.github.hypfvieh:dbus-java-transport-native-unixsocket:5.2.0'
 }
 
 tasks.register('updateAccessWidener', Copy) {
@@ -75,7 +70,7 @@ tasks.register('updateAccessWidener', Copy) {
 
 tasks.register('runPlugin', JavaExec) {
 	group = "build"
-	dependsOn remapJar, downloadAssets, copyPluginToRunDir, outputJar
+	dependsOn remapJar, downloadAssets, copyPluginToRunDir
 	classpath.from configurations.productionRuntime
 	mainClass = "net.fabricmc.loader.impl.launch.knot.KnotClient"
 	workingDir = file("run")
@@ -151,15 +146,6 @@ jar {
 				"Minecraft-Version": project.minecraft_version
 		)
 	}
-}
-
-import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
-
-tasks.register('outputJar', ShadowJar) {
-	archiveClassifier.set("all")
-	mergeServiceFiles()
-	from remapJar
-	configurations = [project.configurations.shadow]
 }
 
 //update access widener during intellij sync
