@@ -679,7 +679,7 @@ public class SpotifyHudElement extends ResizeableHudElement {
 
             final boolean hoveredOverProgressBar = hovered && mouseY >= bottomOffset - progressBarHeight - 1;
             renderer.drawRoundedRectangle(0, bottomOffset - progressBarHeight, width, progressBarHeight, 1, true, false, 0, Color.GRAY.getRGB(), 0);
-            renderer.drawRoundedRectangle(0, bottomOffset - progressBarHeight, width * (this.seeking ? seekingProgress : progress), progressBarHeight, 1, true, false, 0, hoveredOverProgressBar || this.seeking ? Color.RED.getRGB() : Color.WHITE.getRGB(), 0);
+            renderer.drawRoundedRectangle(0, bottomOffset - progressBarHeight, width * (this.seeking ? seekingProgress : progress), progressBarHeight, 1, true, false, 0, hoveredOverProgressBar || this.seeking ? Color.GREEN.getRGB() : Color.WHITE.getRGB(), 0);
             bottomOffset -= progressBarHeight + 1;
 
             //duration
