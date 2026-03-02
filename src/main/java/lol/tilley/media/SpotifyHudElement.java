@@ -34,8 +34,9 @@ import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.io.*;
 import java.net.URI;
-import java.net.URL;
+import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Objects;
@@ -46,24 +47,6 @@ import java.util.Objects;
 public class SpotifyHudElement extends ResizeableHudElement {
 
     public static final int BACKGROUND_COLOR = ColorUtils.transparency(Color.BLACK.getRGB(), 0.5f);
-    private static final PlaybackState.Item AI_DJ_SONG = new PlaybackState.Item(); //item that is displayed when the DJ is talking
-
-    static {
-        AI_DJ_SONG.album = new PlaybackState.Item.Album();
-        AI_DJ_SONG.artists = new PlaybackState.Item.Artist[1];
-        AI_DJ_SONG.album.images = new PlaybackState.Item.Album.Image[1];
-        AI_DJ_SONG.artists[0] = new PlaybackState.Item.Artist();
-        AI_DJ_SONG.album.images[0] = new PlaybackState.Item.Album.Image();
-
-        AI_DJ_SONG.artists[0].name = "Spotify";
-        AI_DJ_SONG.album.name = "Songs Made For You";
-        AI_DJ_SONG.name = AI_DJ_SONG.id = "DJ";
-        AI_DJ_SONG.duration_ms = 30000;
-        AI_DJ_SONG.album.images[0].url = "https://i.imgur.com/29vr8jz.png";
-        AI_DJ_SONG.album.images[0].width = 640;
-        AI_DJ_SONG.album.images[0].height = 640;
-        AI_DJ_SONG.uri = "";
-    }
 
     /**
      * Settings
@@ -93,19 +76,20 @@ public class SpotifyHudElement extends ResizeableHudElement {
     private final DynamicTexture trackThumbnailTexture;
     private final PluginMain plugin;
     private boolean consumedButtonClick = false;
-    private final Timer timer = new Timer();
+    private final Timer secondTimer = new Timer();
 
     // track variables
-    private String song;
-    private String artist;
-    private String album;
-    private String thumbnail;
-    private String url;
-    private String playStatus;
-    private int trackLength;
-    private String repeatStatus;
-    private int trackPos;
-    private boolean shuffle;
+    private String song = "";
+    private String artist = "";
+    private String album = "";
+    private String thumbnail = "";
+    private String url = "";
+    private String playStatus = "";
+    private String repeatStatus = "";
+    private String shuffleStatus = "";
+    private boolean isPlaying = false;
+    private Double trackLength = 0.0;
+    private Double trackPos = 0.0;
 
     public SpotifyHudElement(PluginMain plugin) throws IOException {
         super("Spotify");
@@ -115,7 +99,7 @@ public class SpotifyHudElement extends ResizeableHudElement {
         this.duration = new DurationHandler();
         this.songInfo = new SongInfoHandler();
 
-        this.spotifyLogo = new VectorGraphic("spotify/graphics/spotify_logo.svg", 32, 32);
+        this.spotifyLogo = new VectorGraphic("icons/spotify_logo.svg", 32, 32);
         this.trackThumbnailTexture = new DynamicTexture(640, 640, false);
         this.trackThumbnailTexture.setFilter(true, true);
 
@@ -125,8 +109,10 @@ public class SpotifyHudElement extends ResizeableHudElement {
 
         this.registerSettings(background, binds);
 
-        new Thread(PlayerctlUtils::startMetadataListener, "MediaMetadataListener").start();
-        new Thread(PlayerctlUtils::startStatusListener, "MediaStatusListener").start();
+        new Thread(this::startMetadataListener, "MediaMetadataListener").start();
+        new Thread(this::startPlayStatusListener, "MediaStatusListener").start();
+        new Thread(this::startShuffleListener, "ShuffleListener").start();
+        new Thread(this::startRepeatListener, "RepeatListener").start();
 
         //dont ask
         //this.setupDummyModuleBecauseImFuckingStupidAndForgotToRegisterHudElementsIntoTheEventBus();
@@ -160,59 +146,65 @@ public class SpotifyHudElement extends ResizeableHudElement {
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
+
+                    isPlaying = line.contains("       ");
+
+                    if (line.contains("mpris:trackid")) {
+                        song = "unknown";
+                        artist = "unknown";
+                        album = "unknown";
+                        thumbnail = "";
+                        url = "unknown";
+                    }
                     if (line.contains("xesam:title")) {
                         song = extractValue(line);
                     }
                     if (line.contains("xesam:artist")) {
                        artist = extractValue(line);
                     }
-                    if (line.contains("xesam:album")) {
+                    if (line.contains("xesam:album ")) {
                         album = extractValue(line);
                         if (Objects.equals(album, "DJ")) {
+                            song = "AI DJ";
+                            artist = "DJ";
                             thumbnail = "https://lexicon-assets.spotifycdn.com/DJ-Beta-CoverArt-300.jpg";
                         }
                     }
-                    if (line.contains("xesam:artUrl")) {
+                    if (line.contains("mpris:artUrl")) {
                         thumbnail = extractValue(line);
                     }
-                    if (line.contains("xesam:trackLength")) {
-                        trackLength = Integer.parseInt(extractValue(line));
+                    if (line.contains("mpris:length")) {
+                        trackLength = Double.parseDouble(extractValue(line)) / 1000;
                     }
                     if (line.contains("xesam:url")) {
                         url = extractValue(line);
 
-                        if (url.contains("file:///")) {
-                            song = extractValue(line);
+                        if (url.contains("file://")) {
+                            song = extractValue(line).substring(7);
                         }
 
-                        if (!thumbnail.isEmpty()) {
+                        this.songInfo.updateSong(song, artist, album);
 
-                            InputStream inputStream = null;
-
+                        // download album art
+                        if (thumbnail.startsWith("file://")) {
                             try {
-                                final HttpRequest request = HttpRequest.newBuilder(new URI(thumbnail)).build();
-
-                                inputStream = new URL(thumbnail).openStream();
-
-                                //convert to png
-                                final BufferedImage bufferedImage = ImageIO.read(inputStream);
-                                final ByteArrayOutputStream imageBytes = new ByteArrayOutputStream();
-                                ImageIO.write(bufferedImage, "png", imageBytes);
-
-                                final byte[] byteArray = imageBytes.toByteArray();
-
-                                final NativeImage nativeImage = readNativeImage(byteArray);
-
-                                RenderSystem.recordRenderCall(() -> {
-                                    this.trackThumbnailTexture.setPixels(nativeImage);
-                                    this.trackThumbnailTexture.upload();
-                                    this.trackThumbnailTexture.setFilter(true, true);
-                                });
+                                thumbnail = thumbnail.substring(7);
+                                InputStream inputStream = new FileInputStream(thumbnail);
+                                setImageFromInputStream(inputStream);
                             } catch (Throwable e) {
                                 this.trackThumbnailTexture.setPixels(null);
                                 this.plugin.getLogger().error("Failed to update thumbnail", e);
-                            } finally {
-                                IOUtils.closeQuietly(inputStream);
+                            }
+                        } else if (thumbnail.startsWith("https://")) {
+
+                            try {
+                                HttpClient client = HttpClient.newHttpClient();
+                                HttpRequest request = HttpRequest.newBuilder(URI.create(thumbnail)).build();
+                                InputStream inputStream = client.send(request, HttpResponse.BodyHandlers.ofInputStream()).body();
+                                setImageFromInputStream(inputStream);
+                            } catch (Throwable e) {
+                                this.trackThumbnailTexture.setPixels(null);
+                                this.plugin.getLogger().error("Failed to update thumbnail", thumbnail, e);
                             }
                         }
                     }
@@ -222,7 +214,29 @@ public class SpotifyHudElement extends ResizeableHudElement {
         }
     }
 
-    public void startStatusListener() {
+    public void setImageFromInputStream(InputStream inputStream) throws IOException {
+        BufferedImage img = ImageIO.read(inputStream);
+        int w = img.getWidth(), h = img.getHeight();
+        double s = Math.min(600d / w, 600d / h);
+        int nw = (int)(w * s), nh = (int)(h * s);
+
+        BufferedImage resized = new BufferedImage(nw, nh, BufferedImage.TYPE_INT_ARGB);
+        resized.getGraphics().drawImage(img, 0, 0, nw, nh, null);
+
+        ByteArrayOutputStream imageBytes = new ByteArrayOutputStream();
+        ImageIO.write(resized, "png", imageBytes);
+
+        byte[] byteArray = imageBytes.toByteArray();
+        NativeImage nativeImage = readNativeImage(byteArray);
+
+        RenderSystem.recordRenderCall(() -> {
+            this.trackThumbnailTexture.setPixels(nativeImage);
+            this.trackThumbnailTexture.upload();
+            this.trackThumbnailTexture.setFilter(true, true);
+        });
+    }
+
+    public void startPlayStatusListener() {
         ProcessBuilder pb = new ProcessBuilder("playerctl", "-F", "status");
         pb.redirectErrorStream(true);
 
@@ -230,7 +244,41 @@ public class SpotifyHudElement extends ResizeableHudElement {
             Process process = pb.start();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 String line;
+                while ((line = reader.readLine()) != null) {
+                    playStatus = line;
+                }
+            }
+        } catch (IOException ignored) {
+        }
+    }
 
+    public void startShuffleListener() {
+        ProcessBuilder pb = new ProcessBuilder("playerctl", "-F", "shuffle");
+        pb.redirectErrorStream(true);
+
+        try {
+            Process process = pb.start();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    shuffleStatus = line.isEmpty() ? "Off" : line;
+                }
+            }
+        } catch (IOException ignored) {
+        }
+    }
+
+    public void startRepeatListener() {
+        ProcessBuilder pb = new ProcessBuilder("playerctl", "-F", "loop");
+        pb.redirectErrorStream(true);
+
+        try {
+            Process process = pb.start();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    repeatStatus = line;
+                }
             }
         } catch (IOException ignored) {
         }
@@ -238,12 +286,17 @@ public class SpotifyHudElement extends ResizeableHudElement {
 
     @Override
     public void tick() {
-        if (timer.passed(1000)) {
-            trackPos = Integer.parseInt(playerctl("position"));
+        if (secondTimer.passed(1000)) {
+            secondTimer.reset();
+            try {
+                trackPos = isPlaying ? Double.parseDouble(playerctl("position")) : 0.0;
+            } catch (Exception uhOh) {
+                this.getLogger().error("very not good playerctl error", uhOh);
+            }
         }
     }
     private String extractValue(String line) {
-        int idx = line.indexOf("xesam:");
+        int idx = line.indexOf(":");
         if (idx == -1) return "";
         int valueStart = line.indexOf(" ", idx);
         return valueStart != -1 ? line.substring(valueStart).trim() : "";
@@ -257,36 +310,24 @@ public class SpotifyHudElement extends ResizeableHudElement {
 
         //background
         if(this.background.getValue()) {
-            renderer._drawRoundedRectangle(0, 0, this.getWidth(), this.getHeight(), 5, true, false, 0, this.getFillColor(), 0);
+            renderer.drawRoundedRectangle(0, 0, this.getWidth(), this.getHeight(), 5, true, false, 0, this.getFillColor(), 0);
         }
         //logo
         renderer.drawGraphicRectangle(this.spotifyLogo, this.getWidth() - 5 - 16, 5, 16, 16);
 
 
 
-        if(status == null) {
+        if(!isPlaying) {
             this.trackThumbnailTexture.setPixels(null);
             fr.drawString("No status", 5, 10, -1);
             return;
         }
 
-        if(status.currently_playing_type.equals("ad")) {
-            this.trackThumbnailTexture.setPixels(null);
-            fr.drawString("Ad playing", 5, 10, -1);
-            return;
-        }
-
-        if(!url.contains("spotify")) {
-            this.trackThumbnailTexture.setPixels(null);
-            fr.drawString("Unknown media playing", 5, 10, -1);
-            return;
-        }
-
-        if(url.contains("episode")) {
-            this.trackThumbnailTexture.setPixels(null);
-            fr.drawString("Podcast is playing", 5, 10, -1);
-            return;
-        }
+//        if(!url.contains("spotify")) {
+//            this.trackThumbnailTexture.setPixels(null);
+//            fr.drawString("Unknown media playing", 5, 10, -1);
+//            return;
+//        }
 
 //		final PlaybackState.Item song = status.item;
 
@@ -298,7 +339,7 @@ public class SpotifyHudElement extends ResizeableHudElement {
 
         //thumbnail
         if(this.trackThumbnailTexture.getPixels() != null) {
-            renderer._drawTextureRectangle(this.trackThumbnailTexture.getId(), 65, 65, 5, 5, 65, 65, 3);
+            renderer.drawTextureRectangle(this.trackThumbnailTexture.getId(), 65, 65, 5, 5, 65, 65, 3);
         }
 
         final double leftOffset = 75;
@@ -385,6 +426,8 @@ public class SpotifyHudElement extends ResizeableHudElement {
             playerctl("position 5+");
         }
     }
+
+
 
 @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
@@ -483,6 +526,7 @@ public class SpotifyHudElement extends ResizeableHudElement {
 
             return mouseX >= this.getScaledX() && mouseX <= this.getScaledX() + this.getScaledWidth() && mouseY >= this.getScaledY() && mouseY <= this.getScaledY() + this.getScaledHeight();
         }
+
     }
 
     class SongInfoHandler extends ElementHandler {
@@ -518,6 +562,12 @@ public class SpotifyHudElement extends ResizeableHudElement {
 
             renderer.popScissorBox();
             matrixStack.popPose();
+        }
+
+        public void updateSong(String song, String artist, String album) {
+            this.title.setText(song);
+            this.artists.setText("by " + artist);
+            this.album.setText("on " + album);
         }
 
         @Override
@@ -624,18 +674,17 @@ public class SpotifyHudElement extends ResizeableHudElement {
             //progress bar
             final double progressBarHeight = PROGRESS_BAR_HEIGHT;
 
-            final long progress_ms = trackPos + timer.getTime();
-
+            final long progress_ms = (long) (trackPos * 1000) + secondTimer.getTime();
             final double progress = (double) progress_ms / (double) trackLength;
 
             final boolean hoveredOverProgressBar = hovered && mouseY >= bottomOffset - progressBarHeight - 1;
-            renderer._drawRoundedRectangle(0, bottomOffset - progressBarHeight, width, progressBarHeight, 1, true, false, 0, Color.GRAY.getRGB(), 0);
-            renderer._drawRoundedRectangle(0, bottomOffset - progressBarHeight, width * (this.seeking ? seekingProgress : progress), progressBarHeight, 1, true, false, 0, hoveredOverProgressBar || this.seeking ? Color.GREEN.getRGB() : Color.WHITE.getRGB(), 0);
+            renderer.drawRoundedRectangle(0, bottomOffset - progressBarHeight, width, progressBarHeight, 1, true, false, 0, Color.GRAY.getRGB(), 0);
+            renderer.drawRoundedRectangle(0, bottomOffset - progressBarHeight, width * (this.seeking ? seekingProgress : progress), progressBarHeight, 1, true, false, 0, hoveredOverProgressBar || this.seeking ? Color.RED.getRGB() : Color.WHITE.getRGB(), 0);
             bottomOffset -= progressBarHeight + 1;
 
             //duration
             final String current = String.format("%d:%02d", progress_ms / 60000, progress_ms / 1000 % 60);
-            final String length = String.format("%d:%02d", trackLength / 60000, trackLength / 1000 % 60);
+            final String length = String.format("%d:%02d", (long)(trackLength / 60000), (long)(trackLength / 1000) % 60);
             final double durationHeight = fr.getFontHeight() + 1;
             fr.drawString(current, 0, bottomOffset - durationHeight, Color.LIGHT_GRAY.getRGB());
             fr.drawString(length, width - fr.getStringWidth(length), bottomOffset - durationHeight, Color.LIGHT_GRAY.getRGB());
@@ -643,12 +692,12 @@ public class SpotifyHudElement extends ResizeableHudElement {
 
             //seeking
             if(this.seeking) {
-                final int seekingProgressMs = (int) (seekingProgress * song.duration_ms);
+                final int seekingProgressMs = (int) (seekingProgress * trackLength);
                 final String seekingTime = String.format("%d:%02d", seekingProgressMs / 60000, seekingProgressMs / 1000 % 60);
                 final double seekingTimeWidth = fr.getStringWidth(seekingTime);
                 final double seekX = MathUtils.clamp(mouseX, 0, width);
 
-                renderer._drawRoundedRectangle(seekX - seekingTimeWidth / 2f, this.getHeight() - progressBarHeight - 1 - durationHeight, seekingTimeWidth, durationHeight, 1, true, false, 0, BACKGROUND_COLOR, 0);
+                renderer.drawRoundedRectangle(seekX - seekingTimeWidth / 2f, this.getHeight() - progressBarHeight - 1 - durationHeight, seekingTimeWidth, durationHeight, 1, true, false, 0, BACKGROUND_COLOR, 0);
                 fr.drawString(seekingTime, seekX - seekingTimeWidth / 2f, this.getHeight() - progressBarHeight - 1 - durationHeight, -1);
 
                 renderer.drawCircle(seekX, this.getHeight() - 1, 3, Color.WHITE.getRGB());
@@ -711,8 +760,8 @@ public class SpotifyHudElement extends ResizeableHudElement {
 
 
                 final double progress = MathUtils.clamp(mouseX / this.getWidth(), 0, 1);
-                final int progressMs = (Integer.parseInt(playerctl("progress")) / 1000);
-
+                final int position = (int) (progress * trackLength / 1000);
+                playerctl("position " + position);
             }
 
             super.mouseReleased(mouseX, mouseY, button);
@@ -741,15 +790,15 @@ public class SpotifyHudElement extends ResizeableHudElement {
 
         public MediaControllerHandler() throws IOException {
             //load graphics
-            this.playGraphic = new VectorGraphic("spotify/graphics/play.svg", 48, 48);
-            this.pauseGraphic = new VectorGraphic("spotify/graphics/pause.svg", 48, 48);
-            this.backGraphic = new VectorGraphic("spotify/graphics/back.svg", 48, 48);
-            this.nextGraphic = new VectorGraphic("spotify/graphics/next.svg", 48, 48);
-            this.shuffleOnGraphic = new VectorGraphic("spotify/graphics/shuffle_on.svg", 48, 48);
-            this.shuffleOffGraphic = new VectorGraphic("spotify/graphics/shuffle_off.svg", 48, 48);
-            this.loopOffGraphic = new VectorGraphic("spotify/graphics/loop_off.svg", 48, 48);
-            this.loopAllGraphic = new VectorGraphic("spotify/graphics/loop_all.svg", 48, 48);
-            this.loopSameGraphic = new VectorGraphic("spotify/graphics/loop_same.svg", 48, 48);
+            this.playGraphic = new VectorGraphic("icons/play.svg", 48, 48);
+            this.pauseGraphic = new VectorGraphic("icons/pause.svg", 48, 48);
+            this.backGraphic = new VectorGraphic("icons/back.svg", 48, 48);
+            this.nextGraphic = new VectorGraphic("icons/next.svg", 48, 48);
+            this.shuffleOnGraphic = new VectorGraphic("icons/shuffle_on.svg", 48, 48);
+            this.shuffleOffGraphic = new VectorGraphic("icons/shuffle_off.svg", 48, 48);
+            this.loopOffGraphic = new VectorGraphic("icons/loop_off.svg", 48, 48);
+            this.loopAllGraphic = new VectorGraphic("icons/loop_all.svg", 48, 48);
+            this.loopSameGraphic = new VectorGraphic("icons/loop_same.svg", 48, 48);
         }
 
         //TODO: this could use some object oriented programming
@@ -774,7 +823,7 @@ public class SpotifyHudElement extends ResizeableHudElement {
             this.playPauseX = width / 2f - PAUSE_PLAY_SIZE / 2f;
             final boolean playPauseHovered = hovered && mouseX >= this.playPauseX && mouseX <= this.playPauseX + PAUSE_PLAY_SIZE && mouseY <= this.getScaledY() + PAUSE_PLAY_SIZE;
             if(playPauseHovered) {
-                renderer._drawRoundedRectangle(this.playPauseX - 1, mediaControlsCenter - PAUSE_PLAY_SIZE / 2f - 1, PAUSE_PLAY_SIZE + 2, PAUSE_PLAY_SIZE + 2, 3, true, false, 0, BACKGROUND_COLOR, 0);
+                renderer.drawRoundedRectangle(this.playPauseX - 1, mediaControlsCenter - PAUSE_PLAY_SIZE / 2f - 1, PAUSE_PLAY_SIZE + 2, PAUSE_PLAY_SIZE + 2, 3, true, false, 0, BACKGROUND_COLOR, 0);
             }
             renderer.drawGraphicRectangle(playPauseGraphic, this.playPauseX, mediaControlsCenter - PAUSE_PLAY_SIZE / 2f, PAUSE_PLAY_SIZE, PAUSE_PLAY_SIZE);
 
@@ -786,7 +835,7 @@ public class SpotifyHudElement extends ResizeableHudElement {
             this.backX = mediaLeftOffset - CONTROL_SIZE;
             final boolean backHovered = hovered && mouseX >= this.backX && mouseX <= this.backX + CONTROL_SIZE && mouseY <= this.getScaledY() + CONTROL_SIZE;
             if(backHovered) {
-                renderer._drawRoundedRectangle(this.backX, smallerGraphicY, CONTROL_SIZE, CONTROL_SIZE, 3, true, false, 0, BACKGROUND_COLOR, 0);
+                renderer.drawRoundedRectangle(this.backX, smallerGraphicY, CONTROL_SIZE, CONTROL_SIZE, 3, true, false, 0, BACKGROUND_COLOR, 0);
             }
             renderer.drawGraphicRectangle(this.backGraphic, this.backX, smallerGraphicY, CONTROL_SIZE, CONTROL_SIZE);
             mediaLeftOffset -= CONTROL_SIZE + 5;
@@ -795,27 +844,27 @@ public class SpotifyHudElement extends ResizeableHudElement {
             this.nextX = mediaRightOffset;
             final boolean nextHovered = hovered && mouseX >= this.nextX && mouseX <= this.nextX + CONTROL_SIZE && mouseY <= this.getScaledY() + CONTROL_SIZE;
             if(nextHovered) {
-                renderer._drawRoundedRectangle(this.nextX, smallerGraphicY, CONTROL_SIZE, CONTROL_SIZE, 3, true, false, 0, BACKGROUND_COLOR, 0);
+                renderer.drawRoundedRectangle(this.nextX, smallerGraphicY, CONTROL_SIZE, CONTROL_SIZE, 3, true, false, 0, BACKGROUND_COLOR, 0);
             }
             renderer.drawGraphicRectangle(this.nextGraphic, this.nextX, smallerGraphicY, CONTROL_SIZE, CONTROL_SIZE);
             mediaRightOffset += CONTROL_SIZE + 5;
 
             //shuffle
-            final VectorGraphic shuffleGraphic = status.shuffle_state ? this.shuffleOnGraphic : this.shuffleOffGraphic;
+            final VectorGraphic shuffleGraphic = shuffleStatus.equals("On") ? this.shuffleOnGraphic : this.shuffleOffGraphic;
             this.shuffleX = mediaLeftOffset - CONTROL_SIZE;
             final boolean shuffleHovered = hovered && mouseX >= this.shuffleX && mouseX <= this.shuffleX + CONTROL_SIZE && mouseY <= this.getScaledY() + CONTROL_SIZE;
             if(shuffleHovered) {
-                renderer._drawRoundedRectangle(this.shuffleX, smallerGraphicY, CONTROL_SIZE, CONTROL_SIZE, 3, true, false, 0, BACKGROUND_COLOR, 0);
+                renderer.drawRoundedRectangle(this.shuffleX, smallerGraphicY, CONTROL_SIZE, CONTROL_SIZE, 3, true, false, 0, BACKGROUND_COLOR, 0);
             }
             renderer.drawGraphicRectangle(shuffleGraphic, this.shuffleX, smallerGraphicY, CONTROL_SIZE, CONTROL_SIZE);
             mediaLeftOffset -= CONTROL_SIZE + 5;
 
             //loop
-            final VectorGraphic loopGraphic = status.repeat_state.equals("off") ? this.loopOffGraphic : status.repeat_state.equals("track") ? this.loopSameGraphic : this.loopAllGraphic;
+            final VectorGraphic loopGraphic = repeatStatus.equals("None") ? this.loopOffGraphic : repeatStatus.equals("Track") ? this.loopSameGraphic : this.loopAllGraphic;
             this.loopX = mediaRightOffset;
             final boolean loopHovered = hovered && mouseX >= this.loopX && mouseX <= this.loopX + CONTROL_SIZE && mouseY <= this.getScaledY() + CONTROL_SIZE;
             if(loopHovered) {
-                renderer._drawRoundedRectangle(this.loopX, smallerGraphicY, CONTROL_SIZE, CONTROL_SIZE, 3, true, false, 0, BACKGROUND_COLOR, 0);
+                renderer.drawRoundedRectangle(this.loopX, smallerGraphicY, CONTROL_SIZE, CONTROL_SIZE, 3, true, false, 0, BACKGROUND_COLOR, 0);
             }
             renderer.drawGraphicRectangle(loopGraphic, this.loopX, smallerGraphicY + 1, CONTROL_SIZE, CONTROL_SIZE);
             mediaRightOffset += CONTROL_SIZE + 5;
@@ -867,8 +916,20 @@ public class SpotifyHudElement extends ResizeableHudElement {
 
             //loop button
             if(mouseX >= this.loopX && mouseX <= this.loopX + CONTROL_SIZE && mouseY <= this.getScaledY() + CONTROL_SIZE) {
-                playerctl("loop Playlist");
-                return true;
+                switch (repeatStatus) {
+                    case "None" -> {
+                        playerctl("loop Playlist");
+                        return true;
+                    }
+                    case "Playlist" -> {
+                        playerctl("loop Track");
+                        return true;
+                    }
+                    case "Track" -> {
+                        playerctl("loop None");
+                        return true;
+                    }
+                }
             }
 
             return false;
