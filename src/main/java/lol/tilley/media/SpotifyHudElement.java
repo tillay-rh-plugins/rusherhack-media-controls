@@ -15,10 +15,12 @@ import org.rusherhack.client.api.feature.hud.ResizeableHudElement;
 import org.rusherhack.client.api.render.IRenderer2D;
 import org.rusherhack.client.api.render.RenderContext;
 import org.rusherhack.client.api.render.font.IFontRenderer;
+import org.rusherhack.client.api.render.graphic.TextureGraphic;
 import org.rusherhack.client.api.render.graphic.VectorGraphic;
 import org.rusherhack.client.api.setting.BindSetting;
 import org.rusherhack.client.api.setting.ColorSetting;
 import org.rusherhack.client.api.ui.ScaledElementBase;
+import org.rusherhack.client.api.utils.ChatUtils;
 import org.rusherhack.client.api.utils.InputUtils;
 import org.rusherhack.core.bind.key.NullKey;
 import org.rusherhack.core.event.stage.Stage;
@@ -40,6 +42,10 @@ import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * @author John200410
@@ -79,11 +85,11 @@ public class SpotifyHudElement extends ResizeableHudElement {
     private final Timer secondTimer = new Timer();
 
     // track variables
-    private String song = "";
-    private String artist = "";
-    private String album = "";
+    private String song = "unknown";
+    private String artist = "unknown";
+    private String album = "unknown";
     private String thumbnail = "";
-    private String url = "";
+    private String url = "unknown";
     private String playStatus = "";
     private String repeatStatus = "";
     private String shuffleStatus = "";
@@ -143,24 +149,20 @@ public class SpotifyHudElement extends ResizeableHudElement {
 
         try {
             Process process = pb.start();
+            ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+            final ScheduledFuture<?>[] pendingUpdate = {null};
+
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
 
-                    isPlaying = line.contains("       ");
+                    isPlaying = line.contains("    ");
 
-                    if (line.contains("mpris:trackid")) {
-                        song = "unknown";
-                        artist = "unknown";
-                        album = "unknown";
-                        thumbnail = "";
-                        url = "unknown";
-                    }
                     if (line.contains("xesam:title")) {
                         song = extractValue(line);
                     }
                     if (line.contains("xesam:artist")) {
-                       artist = extractValue(line);
+                        artist = extractValue(line);
                     }
                     if (line.contains("xesam:album ")) {
                         album = extractValue(line);
@@ -178,25 +180,26 @@ public class SpotifyHudElement extends ResizeableHudElement {
                     }
                     if (line.contains("xesam:url")) {
                         url = extractValue(line);
-
-                        if (url.contains("file://")) {
-                            song = extractValue(line).substring(7);
+                        if (url.contains("file://") && Objects.equals(song, "unknown")) {
+                            song = url.substring(7).replace("%20", " ");
                         }
+                    }
 
+                    if (pendingUpdate[0] != null) {
+                        pendingUpdate[0].cancel(false);
+                    }
+                    pendingUpdate[0] = scheduler.schedule(() -> {
                         this.songInfo.updateSong(song, artist, album);
 
-                        // download album art
                         if (thumbnail.startsWith("file://")) {
                             try {
-                                thumbnail = thumbnail.substring(7);
-                                InputStream inputStream = new FileInputStream(thumbnail);
+                                InputStream inputStream = new FileInputStream(thumbnail.substring(7));
                                 setImageFromInputStream(inputStream);
                             } catch (Throwable e) {
                                 this.trackThumbnailTexture.setPixels(null);
                                 this.plugin.getLogger().error("Failed to update thumbnail", e);
                             }
                         } else if (thumbnail.startsWith("https://")) {
-
                             try {
                                 HttpClient client = HttpClient.newHttpClient();
                                 HttpRequest request = HttpRequest.newBuilder(URI.create(thumbnail)).build();
@@ -206,10 +209,25 @@ public class SpotifyHudElement extends ResizeableHudElement {
                                 this.trackThumbnailTexture.setPixels(null);
                                 this.plugin.getLogger().error("Failed to update thumbnail", thumbnail, e);
                             }
+                        } else {
+                            try {
+                                InputStream noargJpgStream = new TextureGraphic("icons/noart.jpg", 640, 640).getInputStream();
+                                setImageFromInputStream(noargJpgStream);
+                            } catch (Throwable e) {
+                                this.trackThumbnailTexture.setPixels(null);
+                                this.plugin.getLogger().error("Failed to update thumbnail", thumbnail, e);
+                            }
                         }
-                    }
+                        song = "unknown";
+                        artist = "unknown";
+                        album = "unknown";
+                        thumbnail = "";
+                        url = "unknown";
+                        trackPos = 0.0;
+                    }, 10, TimeUnit.MILLISECONDS);
                 }
             }
+            scheduler.shutdown();
         } catch (IOException ignored) {
         }
     }
@@ -673,7 +691,9 @@ public class SpotifyHudElement extends ResizeableHudElement {
 
             //progress bar
             final double progressBarHeight = PROGRESS_BAR_HEIGHT;
-
+            if (!Objects.equals(playStatus, "Playing")) {
+                secondTimer.reset();
+            }
             final long progress_ms = (long) (trackPos * 1000) + secondTimer.getTime();
             final double progress = (double) progress_ms / (double) trackLength;
 
