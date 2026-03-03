@@ -196,8 +196,12 @@ public class SpotifyHudElement extends ResizeableHudElement {
                                 InputStream inputStream = new FileInputStream(thumbnail.substring(7));
                                 setImageFromInputStream(inputStream);
                             } catch (Throwable e) {
-                                this.trackThumbnailTexture.setPixels(null);
-                                this.plugin.getLogger().error("Failed to update thumbnail", e);
+                                this.plugin.getLogger().error("Failed to update local art", e);
+                                try {
+                                    setImageFromInputStream(new TextureGraphic("icons/noart.jpg", 640, 640).getInputStream());
+                                } catch (IOException ex) {
+                                    this.plugin.getLogger().error("Fallback for local failed too", ex);
+                                }
                             }
                         } else if (thumbnail.startsWith("https://")) {
                             try {
@@ -206,16 +210,20 @@ public class SpotifyHudElement extends ResizeableHudElement {
                                 InputStream inputStream = client.send(request, HttpResponse.BodyHandlers.ofInputStream()).body();
                                 setImageFromInputStream(inputStream);
                             } catch (Throwable e) {
-                                this.trackThumbnailTexture.setPixels(null);
-                                this.plugin.getLogger().error("Failed to update thumbnail", thumbnail, e);
+                                this.plugin.getLogger().error("Failed to update remote art", e);
+                                try {
+                                    setImageFromInputStream(new TextureGraphic("icons/noart.jpg", 640, 640).getInputStream());
+                                } catch (IOException ex) {
+                                    this.plugin.getLogger().error("Fallback for remote failed too", ex);
+                                }
                             }
                         } else {
                             try {
-                                InputStream noargJpgStream = new TextureGraphic("icons/noart.jpg", 640, 640).getInputStream();
-                                setImageFromInputStream(noargJpgStream);
+                                setImageFromInputStream(new TextureGraphic("icons/noart.jpg", 640, 640).getInputStream());
                             } catch (Throwable e) {
                                 this.trackThumbnailTexture.setPixels(null);
-                                this.plugin.getLogger().error("Failed to update thumbnail", thumbnail, e);
+                                this.trackThumbnailTexture.upload();
+                                this.plugin.getLogger().error("Failed to update no art", e);
                             }
                         }
                         song = "unknown";
@@ -235,7 +243,7 @@ public class SpotifyHudElement extends ResizeableHudElement {
     public void setImageFromInputStream(InputStream inputStream) throws IOException {
         BufferedImage img = ImageIO.read(inputStream);
         int w = img.getWidth(), h = img.getHeight();
-        double s = Math.min(600d / w, 600d / h);
+        double s = Math.min(640d / w, 640d / h);
         int nw = (int)(w * s), nh = (int)(h * s);
 
         BufferedImage resized = new BufferedImage(nw, nh, BufferedImage.TYPE_INT_ARGB);
@@ -252,6 +260,7 @@ public class SpotifyHudElement extends ResizeableHudElement {
             this.trackThumbnailTexture.upload();
             this.trackThumbnailTexture.setFilter(true, true);
         });
+        inputStream.close();
     }
 
     public void startPlayStatusListener() {
